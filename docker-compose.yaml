@@ -1,0 +1,81 @@
+version: '3.9'
+services:
+  destination_db:
+    image: mariadb:latest
+    container_name: destination_db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: destination_db
+    ports:
+      - "3306:3306"
+    volumes:
+    - ./maria_db/destination_db.sql:/docker-entrypoint-initdb.d/destination_db.sql
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'SELECT 1;' | mariadb -u root -proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  puptas_etl:
+    build:
+      context: ./puptas_etl
+    ports:
+      - "5000:5000"
+    container_name: puptas_etl
+    environment:
+      - SRC_DB_USER=u158477306_puptas
+      - SRC_DB_PASSWORD=Puptas.123
+      - SRC_DB_HOST=srv1412.hstgr.io
+      - SRC_DB_PORT=3306
+      - SRC_DB_NAME=u158477306_puptas
+      - DEST_DB_USER=root
+      - DEST_DB_PASSWORD=root
+      - DEST_DB_HOST=destination_db
+      - DEST_DB_PORT=3306
+      - DEST_DB_NAME=destination_db
+    env_file:
+      - .env
+    depends_on:
+      destination_db:
+        condition: service_healthy
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s = socket.create_connection(('localhost', 5000), 2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+
+
+  cron:
+    build:
+      context: ./cron
+    container_name: cron
+    volumes:
+      - ./puptas_etl:/app
+    depends_on:
+      destination_db:
+        condition: service_healthy
+    networks:
+      - app_network
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      puptas_etl:
+        condition: service_healthy
+    networks:
+      - app_network
+
+networks:
+  app_network:
+    driver: bridge

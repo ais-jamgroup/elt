@@ -1,0 +1,8 @@
+# Run the ETL script every minute
+#* * * * * python /app/puptas_etl.py >> /var/log/cron.log 2>&1
+
+#* * * * * echo "Cron is running!" >> /var/log/cron_test.log
+
+echo "* * * * * echo 'Cron is running' >> /var/log/test_cron.log" >> /etc/crontabs/root
+
+
