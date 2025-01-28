@@ -11,16 +11,14 @@ def run_etl():
     """Trigger the ETL process."""
     try:
         print("Starting ETL process...")
-        # Call the ETL functions
         extracted_data = extract()
-        transformed_data = transform(extracted_data)
-        load(transformed_data)
+        demographics, education_trends, insights = transform(extracted_data)
+        load(demographics, education_trends, insights)
         print("ETL process completed successfully.")
         return "ETL process triggered and completed successfully!"
     except Exception as e:
         print(f"ETL process failed: {e}")
         return f"ETL process failed: {e}", 500
-
 
 # Load environment variables for source and destination DBs
 SRC_DB_USER = os.getenv("SRC_DB_USER", "remote_user")
@@ -35,7 +33,6 @@ DEST_DB_HOST = os.getenv("DEST_DB_HOST", "localhost")
 DEST_DB_PORT = os.getenv("DEST_DB_PORT", "3306")
 DEST_DB_NAME = os.getenv("DEST_DB_NAME", "destination_db")
 
-# Database connection strings
 SRC_DB_URL = f"mysql+pymysql://{SRC_DB_USER}:{SRC_DB_PASSWORD}@{SRC_DB_HOST}:{SRC_DB_PORT}/{SRC_DB_NAME}"
 DEST_DB_URL = f"mysql+pymysql://{DEST_DB_USER}:{DEST_DB_PASSWORD}@{DEST_DB_HOST}:{DEST_DB_PORT}/{DEST_DB_NAME}"
 
@@ -44,7 +41,7 @@ def extract():
     print("Extracting data...")
     try:
         engine = sqlalchemy.create_engine(SRC_DB_URL)
-        query = "SELECT * FROM test_passers;"  # Extract only this table
+        query = "SELECT * FROM test_passers;"
         with engine.connect() as connection:
             data = pd.read_sql(query, connection)
         print("Data extracted from remote source:")
@@ -58,66 +55,73 @@ def transform(data):
     """Transform the `test_passers` data for business intelligence."""
     print("Transforming data for business intelligence...")
     try:
-        # Create a full name column in the "Surname, First Name Middle Name" format
+        current_date = datetime.now()
+        
+        # Clean and format data
         data["full_name"] = (
             data["surname"].str.title() + ", " +
             data["first_name"].str.title() + " " +
             data["middle_name"].fillna("").str.title()
         )
-
-        # Format `date_of_birth` and calculate `age`
-        data["date_of_birth"] = pd.to_datetime(data["date_of_birth"])
-        current_date = datetime.now()
-        data["age"] = data["date_of_birth"].apply(lambda dob: current_date.year - dob.year - ((current_date.month, current_date.day) < (dob.month, dob.day)))
-
-        # Standardize and validate email format
+        data["date_of_birth"] = pd.to_datetime(data["date_of_birth"], errors="coerce")
+        data["age"] = data["date_of_birth"].apply(
+            lambda dob: current_date.year - dob.year - ((current_date.month, current_date.day) < (dob.month, dob.day))
+            if pd.notnull(dob) else None
+        )
         data["email"] = data["email"].str.lower().str.strip()
-
-        # Clean up `address`, `shs_school`, and `school_address` by standardizing to title case
         data["address"] = data["address"].str.title().str.strip()
         data["shs_school"] = data["shs_school"].str.title().str.strip()
         data["school_address"] = data["school_address"].str.title().str.strip()
-
-        # Format strand to capitalize first letter of each word
         data["strand"] = data["strand"].str.title().str.strip()
-
-        # Add a calculated column for graduation decade (e.g., "2010s", "2020s")
         data["graduation_decade"] = (data["year_graduated"] // 10 * 10).astype(str) + "s"
-
-        # Create a flag to identify test passers under the age of 18 (useful for filtering insights)
         data["is_minor"] = data["age"] < 18
+        
+        # Replace NaN in critical columns
+        data["strand"] = data["strand"].fillna("Unknown")
+        data["year_graduated"] = data["year_graduated"].fillna(0).astype(int)
+        
+        # Drop columns no longer needed
+        data = data.drop(columns=["first_name", "surname", "middle_name", "date_of_birth"])
 
-        # Validate reference numbers (example: ensuring length and numeric format)
-        data["is_reference_number_valid"] = data["reference_number"].str.match(r"^\d{8,12}$")  # Example: 8-12 digit numeric reference
+        # Split into separate tables
+        demographics = data[["full_name", "age", "address", "email", "is_minor"]]
+        education_trends = data[["shs_school", "school_address", "strand", "year_graduated", "graduation_decade"]]
+        
+        # Create insights table
+        insights = pd.DataFrame({
+            "total_passers": [len(data)],
+            "average_age": [data["age"].mean() if not data["age"].isnull().all() else None],
+            "min_age": [data["age"].min() if not data["age"].isnull().all() else None],
+            "max_age": [data["age"].max() if not data["age"].isnull().all() else None],
+            "minor_count": [data["is_minor"].sum() if "is_minor" in data.columns else 0],
+            "major_count": [(~data["is_minor"]).sum() if "is_minor" in data.columns else 0],
+            "most_common_school": [data["shs_school"].mode()[0] if not data["shs_school"].mode().empty else "N/A"],
+            "most_common_strand": [data["strand"].mode()[0] if not data["strand"].mode().empty else "N/A"],
+            "passers_by_strand": [pd.Series(data["strand"].value_counts()).to_json()],
+            "passers_by_year_graduated": [pd.Series(data["year_graduated"].value_counts()).to_json()],
+        })
 
-        # Calculate the time elapsed since graduation
-        data["years_since_graduation"] = current_date.year - data["year_graduated"]
-
-        # Add a derived column for "region" or "province" if applicable (assuming address parsing is possible)
-        # Example: Extract the last part of the address as a "region" (requires a structured address format)
-        data["region"] = data["address"].str.extract(r"(\b\w+$)").fillna("Unknown")
-
-        # Drop columns that are no longer needed
-        columns_to_drop = ["first_name", "surname", "middle_name", "date_of_birth"]  # Specify columns to drop
-        data = data.drop(columns=columns_to_drop)
-
-        print("Transformed data:")
+        # Debugging outputs
+        print("Transform Data Input:")
         print(data.head())
-        return data
-
+        print("Insights DataFrame:")
+        print(insights)
+        
+        return demographics, education_trends, insights
     except Exception as e:
         print(f"Error during data transformation: {e}")
         raise
 
 
-
-def load(data):
+def load(demographics, education_trends, insights):
     """Load transformed data into the local destination database."""
     print("Loading data into destination database...")
     try:
         engine = sqlalchemy.create_engine(DEST_DB_URL)
         with engine.connect() as connection:
-            data.to_sql("test_passers_transformed", con=connection, if_exists="replace", index=False)  # Load into a new table
+            demographics.to_sql("demographics", con=connection, if_exists="replace", index=False)
+            education_trends.to_sql("education_trends", con=connection, if_exists="replace", index=False)
+            insights.to_sql("insights", con=connection, if_exists="replace", index=False)
         print("Data loaded into destination database successfully!")
     except Exception as e:
         print(f"Error during data loading: {e}")
@@ -127,8 +131,8 @@ if __name__ == "__main__":
     try:
         print("Starting ETL process on container startup...")
         extracted_data = extract()
-        transformed_data = transform(extracted_data)
-        load(transformed_data)
+        demographics, education_trends, insights = transform(extracted_data)
+        load(demographics, education_trends, insights)
         print("ETL process completed successfully.")
     except Exception as e:
         print(f"ETL process failed: {e}")
