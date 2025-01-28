@@ -49,8 +49,6 @@ services:
       timeout: 5s
       retries: 3
 
-
-
   cron:
     build:
       context: ./cron
@@ -75,6 +73,16 @@ services:
         condition: service_healthy
     networks:
       - app_network
+  adminer:
+    image: adminer:latest
+    container_name: adminer
+    restart: always
+    ports:
+      - "8080:8080"  
+    depends_on:
+      - destination_db  
+    networks:
+      - app_network  
 
 networks:
   app_network:
